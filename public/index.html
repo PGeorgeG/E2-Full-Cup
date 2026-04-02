@@ -1,0 +1,1076 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <title>Full Cup</title>
+  <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@600&family=DM+Sans:wght@400;500&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { height: 100%; }
+    body { background: #faf6f1; color: #2c1f14; font-family: 'DM Sans', sans-serif; -webkit-font-smoothing: antialiased; }
+    input[type=date]::-webkit-calendar-picker-indicator { filter: invert(0.4); }
+    input[type=number]::-webkit-inner-spin-button { -webkit-appearance: none; }
+    ::-webkit-scrollbar { width: 4px; }
+    ::-webkit-scrollbar-track { background: #f0e8df; }
+    ::-webkit-scrollbar-thumb { background: #d4b8a0; border-radius: 2px; }
+    button { -webkit-tap-highlight-color: transparent; }
+  </style>
+<!-- __API_KEY_INJECT__ -->
+</head>
+<body>
+<div id="root"></div>
+<script>
+function h(tag, props, ...children) {
+  if (typeof tag === 'function') return tag({ ...props, children: children.flat() });
+  const el = document.createElement(tag);
+  if (props) {
+    for (const [k, v] of Object.entries(props)) {
+      if (k === 'style' && typeof v === 'object') Object.assign(el.style, v);
+      else if (k.startsWith('on') && typeof v === 'function') el.addEventListener(k.slice(2).toLowerCase(), v);
+      else if (k === 'className') el.className = v;
+      else if (k !== 'key') el.setAttribute(k, v);
+    }
+  }
+  for (const child of children.flat(Infinity)) {
+    if (child == null || child === false) continue;
+    el.appendChild(typeof child === 'string' || typeof child === 'number' ? document.createTextNode(child) : child);
+  }
+  return el;
+}
+
+let currentEffect = null;
+function signal(init) {
+  let val = init;
+  const subs = new Set();
+  return {
+    get() { if (currentEffect) subs.add(currentEffect); return val; },
+    set(v) { val = typeof v === 'function' ? v(val) : v; subs.forEach(s => s()); },
+  };
+}
+function effect(fn) {
+  const run = () => { currentEffect = run; fn(); currentEffect = null; };
+  run();
+}
+function computed(fn) {
+  const s = signal(undefined);
+  effect(() => s.set(fn()));
+  return { get: s.get.bind(s) };
+}
+function mount(container, renderFn) {
+  let node = null;
+  effect(() => {
+    const next = renderFn();
+    if (node) container.replaceChild(next, node);
+    else container.appendChild(next);
+    node = next;
+  });
+}
+
+const refs = {};
+const MODEL_FAST   = 'claude-haiku-4-5-20251001';  // cheap, fast — for estimation
+const MODEL_SMART  = 'claude-sonnet-4-20250514';  // nuanced — for analysis & remake
+const C = {
+  bg:'#faf6f1', card:'#ffffff', border:'#e8ddd4', accent:'#c1694f',
+  text:'#2c1f14', muted:'#9a8070', protein:'#5a8a6a', carbs:'#7a9bb5',
+  fat:'#c49a3a', calories:'#c1694f', danger:'#b04040', analysis:'#f5efe8',
+};
+const todayStr = () => {
+  var d = new Date();
+  var y = d.getFullYear();
+  var m = String(d.getMonth() + 1).padStart(2, '0');
+  var day = String(d.getDate()).padStart(2, '0');
+  return y + '-' + m + '-' + day;
+};
+const DEFAULT_GOALS = { calories: 2000, carbs: 250, protein: 166, fat: 65 };
+
+const apiKey        = signal(window.__ANTHROPIC_API_KEY__ || localStorage.getItem('meb_apikey') || '');
+const _allMeals = JSON.parse(localStorage.getItem('meb_meals') || '[]');
+const _today = todayStr();
+const _todayMeals = _allMeals.filter(function(m) { return m.date === _today; });
+if (_todayMeals.length !== _allMeals.length) localStorage.setItem('meb_meals', JSON.stringify(_todayMeals));
+const meals         = signal(_todayMeals);
+const goals         = signal(JSON.parse(localStorage.getItem('meb_goals') || 'null') || DEFAULT_GOALS);
+const date          = signal(todayStr());
+
+// Auto-advance date at midnight
+(function() {
+  function msUntilMidnight() {
+    var now = new Date();
+    var midnight = new Date(now); midnight.setHours(24,0,0,0);
+    return midnight - now;
+  }
+  function scheduleReset() {
+    setTimeout(function() {
+      var today = todayStr();
+      date.set(today);
+      // Clear all meals from previous days
+      var kept = meals.get().filter(function(m) { return m.date === today; });
+      saveMeals(kept);
+      scheduleReset();
+    }, msUntilMidnight());
+  }
+  scheduleReset();
+})();
+const inputVal      = { value: '' };
+setTimeout(claimPendingUnlock, 800);
+const loading       = signal(false);
+const errMsg        = signal('');
+const editGoals     = signal(false);
+const analysis      = signal(null);
+const analysisLoad  = signal(false);
+const analysisOpen  = signal(false);
+const effectResult  = signal(null);
+const effectLoad    = signal(false);
+const effectOpen    = signal(false);
+const apiKeyInput   = { value: '' };
+const neverEat      = signal(JSON.parse(localStorage.getItem('meb_never') || '[]'));
+const DEFAULT_PROFILE = { sex:'male', age:62, weightKg:104, heightCm:185, activity:'moderate' };
+const profile       = signal(JSON.parse(localStorage.getItem('meb_profile') || 'null') || DEFAULT_PROFILE);
+const showProfile   = signal(false);
+const lateNudge     = signal(false);
+const photoScanning = signal(false);
+const neverInput    = { value: '' };
+const showNever     = signal(false);
+const remakeResult  = signal(null);
+const remakeLoading = signal(false);
+const fillerItems   = signal([]);  // [{label, checked}]
+const checkedCuts   = signal({});
+
+
+// ============================================================
+// REVOLT 1 REWARD SYSTEM — 40 parts, one per day, ends May 4
+// ============================================================
+const BIKE_PARTS = [
+  { id:'bartape_plugs', name:'Bar end plugs', value:6, emoji:'🔩', desc:'The finishing touch on your bars' },
+  { id:'wheels', name:'Wheelset (700c)', value:277, emoji:'⚙️', desc:'Giant aluminum wheels, ready to roll' },
+  { id:'cable_ends', name:'Cable end caps', value:5, emoji:'🔧', desc:'Tiny but essential - keeps cables from fraying' },
+  { id:'drivetrain', name:'Shimano GRX Drivetrain', value:234, emoji:'⚡', desc:'2x10 GRX/Tiagra - smooth across any surface' },
+  { id:'bartape', name:'Bar tape', value:22, emoji:'🎀', desc:'Cushioned grip for the long haul' },
+  { id:'fork', name:'Carbon fork', value:204, emoji:'🏆', desc:'Advanced composite - absorbs every bump' },
+  { id:'valves', name:'Valve stems', value:6, emoji:'💨', desc:'Presta valves - your tires breathe through these' },
+  { id:'brake_levers', name:'GRX Brake levers', value:66, emoji:'🤲', desc:'Ergonomic lever reach for confident control' },
+  { id:'rim_tape', name:'Rim tape x2', value:9, emoji:'🏷️', desc:'Protects tubes from spoke holes' },
+  { id:'calipers', name:'GRX Hydraulic calipers', value:95, emoji:'🛑', desc:'Precise hydraulic stopping power' },
+  { id:'spoke_nipples', name:'Spoke nipples x32', value:7, emoji:'🔩', desc:'32 tiny pieces holding your wheels true' },
+  { id:'frame', name:'ALUXX frame', value:380, emoji:'🚲', desc:'The heart of the Revolt - lightweight and tough' },
+  { id:'der_hanger', name:'Derailleur hanger', value:11, emoji:'🪝', desc:'The sacrificial part that saves your frame' },
+  { id:'rear_der', name:'GRX rear derailleur', value:80, emoji:'⚙️', desc:'10-speed precision shifting on any terrain' },
+  { id:'bb', name:'Bottom bracket', value:18, emoji:'🔄', desc:'Smooth rotation at the heart of the drivetrain' },
+  { id:'front_der', name:'GRX front derailleur', value:47, emoji:'↔️', desc:'2x shifting - road speed or gravel grind' },
+  { id:'cr_bolts', name:'Chainring bolts', value:6, emoji:'🔩', desc:'Five bolts holding your power to the cranks' },
+  { id:'crankset', name:'GRX crankset', value:102, emoji:'💪', desc:'The engine room - where your legs meet the bike' },
+  { id:'shift_cables', name:'Shift cable set', value:15, emoji:'🧵', desc:'Stainless inner cables for crisp shifts' },
+  { id:'saddle', name:'Saddle', value:58, emoji:'🪑', desc:'Your perch for the long haul' },
+  { id:'brake_hose', name:'Brake hose set', value:18, emoji:'🔴', desc:'Hydraulic lines - the veins of your braking system' },
+  { id:'tyres', name:'CrossCut AT 2 Tyres x2', value:73, emoji:'🏁', desc:'Gravel-ready. Born for the mixed surface.' },
+  { id:'headset', name:'Headset', value:22, emoji:'🎯', desc:'Bearings that keep your steering smooth' },
+  { id:'seatpost', name:'D-Fuse seatpost', value:95, emoji:'📐', desc:'Giant compliance seatpost - smooth out the rough' },
+  { id:'axles', name:'Thru-axles x2', value:15, emoji:'⚡', desc:'Secure and rattle-free wheel retention' },
+  { id:'cassette', name:'GRX cassette 11-34', value:44, emoji:'🎸', desc:'11-34t - climbs anything, flies on the flat' },
+  { id:'stem_bolts', name:'Stem bolts', value:6, emoji:'🔩', desc:'Four bolts between you and the bars' },
+  { id:'stem', name:'Stem', value:33, emoji:'🎯', desc:'Connects your hands to the front wheel' },
+  { id:'chain', name:'Chain 10-speed', value:22, emoji:'⛓️', desc:'The link between effort and motion' },
+  { id:'bars', name:'Handlebars D-Fuse', value:88, emoji:'🏄', desc:'D-Fuse compliance - tames road buzz beautifully' },
+  { id:'pedal_washers', name:'Pedal washers', value:5, emoji:'🔩', desc:'Tiny protectors for your crank threads' },
+  { id:'pedals', name:'Pedals', value:58, emoji:'👟', desc:'Where the power meets the bike' },
+  { id:'flip_chip', name:'Dropout flip chip', value:11, emoji:'🔧', desc:'Adjusts geometry and tire clearance on the fly' },
+  { id:'rotors', name:'GRX brake rotors x2', value:36, emoji:'⭕', desc:'160mm rotors - confident stopping in any weather' },
+  { id:'seat_clamp', name:'Seat clamp', value:9, emoji:'🗜️', desc:'Keeps your saddle exactly where you want it' },
+  { id:'tubes', name:'Inner tubes x2', value:15, emoji:'🫧', desc:'Last line of defence against a walk home' },
+  { id:'housing', name:'Cable housing set', value:15, emoji:'🧵', desc:'Protects your shift cables from the elements' },
+  { id:'hs_spacers', name:'Headset spacers', value:7, emoji:'📏', desc:'Dial in your stack height perfectly' },
+  { id:'spokes', name:'Spoke set x32', value:26, emoji:'✨', desc:'32 stainless spokes - the web that holds it all' },
+  { id:'assembly', name:'Final assembly', value:58, emoji:'🎉', desc:'Every part in place. The Revolt lives. Ride it.' },
+];
+const BIKE_TOTAL_VALUE = BIKE_PARTS.reduce(function(s,p){ return s + p.value; }, 0);
+
+function loadBikeState() {
+  return JSON.parse(localStorage.getItem('meb_bike') || 'null') || { unlockedIds: [], awardedDates: [], pendingUnlock: null };
+}
+function saveBikeState(s) { localStorage.setItem('meb_bike', JSON.stringify(s)); bikeState.set(s); }
+const bikeState      = signal(loadBikeState());
+const showBike       = signal(false);
+const bikeUnlockAnim = signal(null);
+
+function checkForReward() {
+  var today = todayStr();
+  var state = loadBikeState();
+  if (state.awardedDates && state.awardedDates.indexOf(today) >= 0) return; // already processed today
+  var g = goals.get();
+  var tm = meals.get().filter(function(m){ return m.date === today; });
+  var totalCals = tm.reduce(function(s,m){ return s + (m.calories||0); }, 0);
+  if (totalCals < g.calories * 0.9) return; // below 90% threshold
+
+  var nextIdx = state.unlockedIds.length;
+  if (nextIdx >= BIKE_PARTS.length) return; // all parts earned!
+
+  // Mark today as checked regardless of payout (prevents re-rolling)
+  if (!state.awardedDates) state.awardedDates = [];
+
+  // --- Variable ratio mechanics ---
+  // Consecutive day streak (silent — never shown to user)
+  var streak = state.streak || 0;
+  var yesterday = (function() {
+    var d = new Date(); d.setDate(d.getDate() - 1);
+    var y = d.getFullYear(), m = String(d.getMonth()+1).padStart(2,'0'), dy = String(d.getDate()).padStart(2,'0');
+    return y+'-'+m+'-'+dy;
+  })();
+  streak = (state.awardedDates.indexOf(yesterday) >= 0) ? streak + 1 : 0;
+  state.streak = streak;
+
+  // Base payout probability: 75%, boosted quietly by streak
+  var payoutChance = 0.75 + Math.min(streak, 4) * 0.04; // up to ~91% after 4 days
+  // ~weekly jackpot: ~1 in 7 qualifying days pays double regardless
+  var jackpot = Math.random() < (1/7);
+  // Double unlock chance on non-jackpot days: 1 in 6
+  var double = !jackpot && Math.random() < (1/6);
+
+  var pays = jackpot || Math.random() < payoutChance;
+
+  state.awardedDates.push(today);
+
+  if (!pays) {
+    // Silent non-payout — just save streak progress, no message
+    saveBikeState(state);
+    return;
+  }
+
+  // Award first part
+  var unlocks = [];
+  var part1 = BIKE_PARTS[nextIdx];
+  state.unlockedIds.push(part1.id);
+  unlocks.push(part1);
+
+  // Award second part if double/jackpot and parts remain
+  if ((double || jackpot) && state.unlockedIds.length < BIKE_PARTS.length) {
+    var part2 = BIKE_PARTS[state.unlockedIds.length];
+    state.unlockedIds.push(part2.id);
+    unlocks.push(part2);
+  }
+
+  state.pendingUnlock = { parts: unlocks, isDouble: unlocks.length > 1, isJackpot: jackpot };
+  saveBikeState(state);
+  claimPendingUnlock();
+}
+
+function claimPendingUnlock() {
+  var state = loadBikeState();
+  if (!state.pendingUnlock) return;
+  bikeUnlockAnim.set(state.pendingUnlock);
+  state.pendingUnlock = null;
+  saveBikeState(state);
+  showBike.set(true);
+  setTimeout(function() { bikeUnlockAnim.set(null); }, 8000);
+}
+
+function saveProfile(p) { profile.set(p); localStorage.setItem('meb_profile', JSON.stringify(p)); }
+
+function calcTDEE(p) {
+  // Mifflin-St Jeor BMR
+  var bmr = p.sex === 'male'
+    ? 10 * p.weightKg + 6.25 * p.heightCm - 5 * p.age + 5
+    : 10 * p.weightKg + 6.25 * p.heightCm - 5 * p.age - 161;
+  var multipliers = { sedentary: 1.2, light: 1.375, moderate: 1.55, active: 1.725, very_active: 1.9 };
+  return Math.round(bmr * (multipliers[p.activity] || 1.55));
+}
+
+function profileSummary(p) {
+  var activityLabels = { sedentary:'sedentary', light:'lightly active', moderate:'moderately active', active:'very active', very_active:'extra active' };
+  return p.sex + ', ' + p.age + ' years old, ' + p.weightKg + ' kg, ' + p.heightCm + ' cm, ' + (activityLabels[p.activity] || p.activity) + ' (TDEE ~' + calcTDEE(p) + ' kcal/day)';
+}
+
+function saveNever(list) { neverEat.set(list); localStorage.setItem('meb_never', JSON.stringify(list)); }
+
+function saveMeals(m) { meals.set(m); localStorage.setItem('meb_meals', JSON.stringify(m)); }
+function saveGoals(g) { goals.set(g); localStorage.setItem('meb_goals', JSON.stringify(g)); }
+
+const todayMeals = computed(() => meals.get().filter(m => m.date === date.get()));
+const totals = computed(() => todayMeals.get().reduce((acc, m) => ({
+  calories: acc.calories + m.calories,
+  protein:  acc.protein  + m.protein,
+  carbs:    acc.carbs    + m.carbs,
+  fat:      acc.fat      + (m.fat || 0),
+}), { calories:0, protein:0, carbs:0, fat:0 }));
+
+async function callClaude(system, userMsg, maxTokens=300, model=MODEL_SMART) {
+  const res = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-api-key': apiKey.get(),
+      'anthropic-version': '2023-06-01',
+      'anthropic-dangerous-direct-browser-access': 'true',
+    },
+    body: JSON.stringify({ model: model, max_tokens: maxTokens, system, messages: [{ role:'user', content: userMsg }] }),
+  });
+  const data = await res.json();
+  if (!res.ok || data.error) {
+    const msg = (data.error && data.error.message) || ('API error ' + res.status);
+    throw new Error(msg);
+  }
+  return data.content.map(b => b.text || '').join('');
+}
+
+async function estimateMeal(desc) {
+  loading.set(true); errMsg.set('');
+  try {
+    const text = await callClaude(
+      'You are a nutrition estimation assistant. Estimate calories, protein (g), carbs (g), and fat (g) for the meal described.\nRespond ONLY with valid JSON, no markdown:\n{"calories":number,"protein":number,"carbs":number,"fat":number,"note":"brief note"}',
+      'Estimate nutrition for: ' + desc,
+      200, MODEL_FAST
+    );
+    return JSON.parse(text.replace(/```json|```/g,'').trim());
+  } catch(e) {
+    console.error(e); errMsg.set('Could not estimate nutrition. Try again.'); return null;
+  } finally { loading.set(false); }
+}
+
+async function scanPhoto(file) {
+  photoScanning.set(true); errMsg.set('');
+  try {
+    // Resize image to max 1024px and compress to JPEG before sending
+    const base64 = await new Promise(function(resolve, reject) {
+      var reader = new FileReader();
+      reader.onload = function(e) {
+        var img = new Image();
+        img.onload = function() {
+          var maxDim = 1024;
+          var w = img.width, h = img.height;
+          if (w > maxDim || h > maxDim) {
+            if (w > h) { h = Math.round(h * maxDim / w); w = maxDim; }
+            else { w = Math.round(w * maxDim / h); h = maxDim; }
+          }
+          var canvas = document.createElement('canvas');
+          canvas.width = w; canvas.height = h;
+          canvas.getContext('2d').drawImage(img, 0, 0, w, h);
+          var dataUrl = canvas.toDataURL('image/jpeg', 0.85);
+          resolve(dataUrl.split(',')[1]);
+        };
+        img.onerror = reject;
+        img.src = e.target.result;
+      };
+      reader.onerror = reject;
+      reader.readAsDataURL(file);
+    });
+    var mediaType = 'image/jpeg';
+    var res = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': apiKey.get(),
+        'anthropic-version': '2023-06-01',
+        'anthropic-dangerous-direct-browser-access': 'true',
+      },
+      body: JSON.stringify({
+        model: MODEL_FAST,
+        max_tokens: 300,
+        messages: [{
+          role: 'user',
+          content: [
+            { type: 'image', source: { type: 'base64', media_type: mediaType, data: base64 }},
+            { type: 'text', text: 'Describe this food in plain English as if logging it for a meal tracker — list the main components and approximate portions (e.g. "grilled chicken breast about 150g, roasted sweet potato, side salad with olive oil dressing"). Be concise, one sentence or short list. If you cannot identify food, say so.' }
+          ]
+        }]
+      })
+    });
+    var data = await res.json();
+    if (!res.ok || data.error) throw new Error((data.error && data.error.message) || 'API error');
+    var desc = data.content.map(function(b){ return b.text || ''; }).join('').trim();
+    if (refs.textarea) { refs.textarea.value = desc; refs.textarea.focus(); }
+    inputVal.value = desc;
+  } catch(e) {
+    errMsg.set('Photo scan failed: ' + (e.message || 'unknown error'));
+  } finally {
+    photoScanning.set(false);
+  }
+}
+
+async function runAnalysis() {
+  const list = todayMeals.get();
+  if (!list.length) return;
+  const latest = list[list.length - 1];
+  // Cache: skip API call if meal hasn't changed since last analysis
+  const cacheKey = latest.id + ':' + latest.description;
+  if (analysis.get() && analysis.get()._cacheKey === cacheKey) {
+    analysisOpen.set(true); return;
+  }
+  analysisLoad.set(true); analysisOpen.set(true); analysis.set(null);
+  try {
+    const mealList = '- ' + latest.description + ': ' + latest.calories + ' kcal, ' + latest.protein + 'g protein, ' + latest.carbs + 'g carbs, ' + latest.fat + 'g fat';
+    const text = await callClaude(
+      'You are a warm, caring nutrition guide. Gently identify one way this meal could better nourish the person — not about cutting calories harshly, but about what might serve them better. Also suggest up to 3 additions that would help them feel sustained and energised. Frame everything with care and compassion, not criticism. JSON only, no markdown:\n{"topCut":{"meal":"name","suggestion":"gentle reframe or swap","savedKcal":number},"otherTips":[{"meal":"name","suggestion":"...","savedKcal":number}],"emptyCals":"one gentle sentence about anything that isn\'t serving them well, or null","fillerSuggestions":["caring suggestion + why it helps","caring suggestion + why it helps","caring suggestion + why it helps"],"summary":"one warm, encouraging sentence"}',
+      'Most recent meal:\n' + mealList + '\n\nMy daily targets: ' + (goals.get().calories) + ' kcal, ' + (goals.get().protein || 166) + 'g protein, ' + (goals.get().carbs || 250) + 'g carbs, ' + (goals.get().fat || 65) + 'g fat.' + (neverEat.get().length ? '\n\nFoods I will never eat: ' + neverEat.get().join(', ') + '. Do not suggest these.' : '') + '\n\nWhere could I most easily cut calories in this meal?',
+      600
+    );
+    const parsed = JSON.parse(text.replace(/```json|```/g,'').trim());
+    parsed._cacheKey = latest.id + ':' + latest.description;
+    analysis.set(parsed);
+    checkedCuts.set({});
+    if (parsed.fillerSuggestions) {
+      fillerItems.set(parsed.fillerSuggestions.map(function(s) { return { label: s, checked: false }; }));
+    }
+  } catch(e) { analysis.set({ error: true, message: e.message || 'Unknown error' }); }
+  finally { analysisLoad.set(false); }
+}
+
+async function runRemake() {
+  const al = analysis.get();
+  if (!al) return;
+  remakeLoading.set(true); remakeResult.set(null);
+  const latestMeal = todayMeals.get()[todayMeals.get().length - 1];
+  const mealDescs = latestMeal ? latestMeal.description : '';
+  const cc = checkedCuts.get();
+  const checkedFillers = fillerItems.get().filter(function(i) { return i.checked; }).map(function(i) { return i.label; });
+  const activeTips = [];
+  if (cc['topCut'] !== false) activeTips.push(al.topCut.suggestion);
+  (al.otherTips || []).forEach(function(t, idx) { if (cc['tip-' + idx] !== false) activeTips.push(t.suggestion); });
+  const tips = activeTips.join('; ');
+  if (!tips && !checkedFillers.length) { errMsg.set('Please check at least one suggestion to apply.'); return; }
+  const emptyCals = al.emptyCals || '';
+  try {
+    const text = await callClaude(
+      'You are a meal planning assistant. Rewrite the meal description applying the suggestions and including any requested additions. CRITICAL CONSTRAINT: the rewritten meal must have the same or fewer calories than the original — if adding ingredients, cut elsewhere to compensate. Return JSON only, no markdown: {"description":"plain meal description as someone would type into a meal log","calories":estimated_calorie_count_as_number}',
+      'Original meal(s): ' + mealDescs + '. Original calorie total: ~' + Math.round(totals.get().calories) + ' kcal. Person: ' + profileSummary(profile.get()) + '. Suggestions: ' + tips + (emptyCals ? '. Empty calories to reduce: ' + emptyCals : '') + (checkedFillers.length ? '. Also add: ' + checkedFillers.join(', ') : '') + (neverEat.get().length ? '. NEVER suggest or include these foods: ' + neverEat.get().join(', ') + '.' : '') + ' My targets: ' + (goals.get().protein || 166) + 'g protein, ' + (goals.get().fat || 65) + 'g fat. Rewrite the meal applying all of this. The rewritten meal must not exceed ' + Math.round(totals.get().calories) + ' kcal.',
+      200
+    );
+    try {
+      const parsed = JSON.parse(text.replace(/```json|```/g,'').trim());
+      remakeResult.set(parsed);
+    } catch(e) {
+      remakeResult.set({ description: text.trim(), calories: null });
+    }
+  } catch(e) { remakeResult.set('Could not generate suggestion. Try again.'); }
+  finally { remakeLoading.set(false); }
+}
+
+async function runEffect() {
+  const tot = totals.get();
+  if (!tot.calories) return;
+  // Cache: skip if totals haven't changed
+  const effectKey = Math.round(tot.calories) + ':' + Math.round(tot.protein) + ':' + Math.round(tot.carbs) + ':' + Math.round(tot.fat);
+  if (effectResult.get() && effectResult.get()._cacheKey === effectKey) {
+    effectOpen.set(true); return;
+  }
+  effectLoad.set(true); effectOpen.set(true); effectResult.set(null);
+  try {
+    const now = new Date();
+    const hour = now.getHours();
+    const minute = now.getMinutes();
+    const ampm = hour < 12 ? 'AM' : 'PM';
+    const h12 = hour % 12 || 12;
+    const timeStr = h12 + ':' + String(minute).padStart(2,'0') + ' ' + ampm;
+    const hoursLeft = Math.max(0, 20 - hour - (minute / 60));
+    const windowMsg = hoursLeft === 0
+      ? 'The eating window is closed (after 8pm) — this is the full day.'
+      : 'About ' + hoursLeft.toFixed(1) + ' hours left in the eating window (stops at 8pm).';
+    const mealList = todayMeals.get().map(function(m) { return m.description; }).join('; ');
+    const neverStr = neverEat.get().length ? ' Foods this person will never eat: ' + neverEat.get().join(', ') + '.' : '';
+    const userMsg = 'Person: ' + profileSummary(profile.get()) + '.' + neverStr + ' ' +
+      'Current time: ' + timeStr + '. ' + windowMsg + ' ' +
+      'Meals so far: ' + mealList + '. ' +
+      'Totals so far: ' + Math.round(tot.calories) + ' kcal, ' +
+      Math.round(tot.protein) + 'g protein, ' +
+      Math.round(tot.carbs) + 'g carbs, ' +
+      Math.round(tot.fat) + 'g fat.';
+    const system = 'You are a nutrition and weight loss analyst. Use Mifflin-St Jeor. One short sentence per field. These may not be the full day — account for time remaining. JSON only, no markdown, no backticks: ' +
+      '{"tdee":number,"deficit":number,"weeklyLossKg":number,' +
+      '"calories":"calories so far and room remaining",' +
+      '"protein":"protein so far vs ' + (goals.get().protein || 166) + 'g target and whether more is needed",' +
+      '"carbs":"carbs so far and balance",' +
+      '"fat":"fat so far",' +
+      '"fiber":"fiber estimate",' +
+      '"vitamins":"gaps or strengths",' +
+      '"overall":"how the day is tracking, or full verdict if after 8pm",' +
+      '"motivation":"one short encouraging line"}';
+    const text = await callClaude(system, userMsg, 600);
+    const er = JSON.parse(text.replace(/```json|```/g,'').trim());
+    er._cacheKey = effectKey;
+    effectResult.set(er);
+  } catch(e) { console.error(e); effectResult.set({ error: true }); }
+  finally { effectLoad.set(false); }
+}
+
+async function addMeal() {
+  const desc = inputVal.value.trim();
+  if (!desc || loading.get()) return;
+  const nutrition = await estimateMeal(desc);
+  if (!nutrition) return;
+  saveMeals([...meals.get(), { id:Date.now(), description:desc, date:date.get(), ...nutrition }]);
+  analysis.set(null); effectResult.set(null); remakeResult.set(null); // invalidate caches
+  checkForReward();
+  inputVal.value = '';
+  if (refs.textarea) refs.textarea.value = '';
+  // Late meal nudge
+  const now = new Date();
+  const mins = now.getHours() * 60 + now.getMinutes();
+  if (mins >= 20 * 60 && nutrition.calories > 200) {
+    lateNudge.set(true);
+    setTimeout(function() { lateNudge.set(false); }, 8000);
+  }
+}
+
+function macroBar(label, value, max, color) {
+  const pct = Math.min((value / max) * 100, 100).toFixed(1);
+  return h('div', { style: { marginBottom:'10px' } },
+    h('div', { style: { display:'flex', justifyContent:'space-between', marginBottom:'4px', fontSize:'12px', fontFamily:"'DM Mono',monospace" } },
+      h('span', { style: { color:C.text, textTransform:'uppercase', letterSpacing:'1px' } }, label),
+      h('span', { style: { color } }, Math.round(value), h('span', { style:{ color:C.muted } }, '/', max)),
+    ),
+    h('div', { style: { height:'6px', borderRadius:'3px', background:C.border, overflow:'hidden' } },
+      h('div', { style: { height:'100%', width:pct+'%', background:color, borderRadius:'3px', transition:'width 0.5s ease' } }),
+    ),
+  );
+}
+
+function iconBtn(symbol, color, onclick) {
+  const el = h('button', { style: { background:'none', border:`1px solid ${color}44`, borderRadius:'6px', color, padding:'4px 8px', cursor:'pointer', fontSize:'14px', transition:'background 0.2s', flexShrink:'0' } }, symbol);
+  el.addEventListener('mouseenter', () => el.style.background = color+'22');
+  el.addEventListener('mouseleave', () => el.style.background = 'none');
+  el.addEventListener('click', onclick);
+  return el;
+}
+
+function renderApiKeyScreen() {
+  const inp = h('input', { type:'password', placeholder:'sk-ant-...', style: {
+    width:'100%', background:'#0f0e0c', border:`1px solid ${C.border}`, borderRadius:'8px',
+    color:C.text, fontFamily:"'DM Mono',monospace", fontSize:'13px', padding:'10px 12px', outline:'none', marginBottom:'12px',
+  }});
+  inp.addEventListener('focus', () => inp.style.borderColor = C.accent+'88');
+  inp.addEventListener('blur',  () => inp.style.borderColor = C.border);
+  const continueBtn = h('button', { style: {
+    width:'100%', padding:'11px', background:C.border, color:C.muted,
+    border:'none', borderRadius:'8px', fontFamily:"'DM Sans',sans-serif", fontWeight:'600', fontSize:'14px', cursor:'not-allowed',
+  }}, 'Continue');
+  inp.addEventListener('input', () => {
+    apiKeyInput.value = inp.value;
+    const ok = inp.value.startsWith('sk-');
+    continueBtn.style.background = ok ? C.accent : C.border;
+    continueBtn.style.color = ok ? '#1a1600' : C.muted;
+    continueBtn.style.cursor = ok ? 'pointer' : 'not-allowed';
+  });
+  const save = () => { const v = inp.value.trim(); if (v.startsWith('sk-')) { localStorage.setItem('meb_apikey', v); apiKey.set(v); } };
+  inp.addEventListener('keydown', e => { if (e.key === 'Enter') save(); });
+  continueBtn.addEventListener('click', save);
+  return h('div', { style:{ minHeight:'100vh', display:'flex', alignItems:'center', justifyContent:'center', padding:'24px' }},
+    h('div', { style:{ maxWidth:'400px', width:'100%', background:C.card, border:`1px solid ${C.border}`, borderRadius:'14px', padding:'28px 24px' }},
+      h('h1', { style:{ fontFamily:"'Playfair Display',serif", fontSize:'24px', color:C.accent, marginBottom:'6px' }}, 'Full Cup'),
+      h('p', { style:{ color:C.muted, fontSize:'13px', marginBottom:'22px', lineHeight:'1.6' }}, "Enter your Anthropic API key to get started. It's stored only in this browser."),
+      inp, continueBtn,
+      h('p', { style:{ color:C.muted, fontSize:'11px', marginTop:'12px', textAlign:'center' }}, 'Key saved to localStorage — never sent anywhere except Anthropic.'),
+    ),
+  );
+}
+
+function renderApp() {
+  const tm = todayMeals.get();
+  const tot = totals.get();
+  const g = goals.get();
+  const remaining = g.calories - tot.calories;
+  const over = remaining < 0;
+  const isLoading = loading.get();
+
+  // Header
+  const dateInput = h('span', { style:{ fontFamily:"'DM Mono',monospace", fontSize:'12px', color:C.muted, display:'block', marginTop:'4px' }}, date.get());
+  const serverKey = !!window.__ANTHROPIC_API_KEY__;
+  const apiKeyLink = serverKey ? h('span',{}) : h('button', { style:{ background:'none', border:'none', color:C.muted, fontFamily:"'DM Mono',monospace", fontSize:'10px', cursor:'pointer', textDecoration:'underline' }}, 'API key');
+  if (!serverKey) apiKeyLink.addEventListener('click', () => { if (confirm('Clear API key and log out?')) { localStorage.removeItem('meb_apikey'); apiKey.set(''); }});
+  const header = h('div', { style:{ marginBottom:'28px' }},
+    h('div', { style:{ display:'flex', alignItems:'baseline', justifyContent:'space-between', marginBottom:'2px' }},
+      h('div', { style:{ display:'flex', alignItems:'baseline', gap:'10px' }},
+        h('h1', { style:{ fontFamily:"'Playfair Display',serif", fontSize:'28px', margin:'0', color:C.accent }}, 'Full Cup'),
+        h('span', { style:{ fontSize:'13px', color:C.muted }}, 'you can\'t pour from an empty cup.'),
+      ),
+      apiKeyLink,
+    ),
+    dateInput,
+  );
+
+  // Goals editor
+  let goalsEditor = h('span',{});
+  if (editGoals.get()) {
+    const calInp  = h('input', { type:'number', value:String(g.calories), style:{ width:'100%', background:C.bg, border:`1px solid ${C.border}`, borderRadius:'8px', color:C.text, fontFamily:"'DM Mono',monospace", fontSize:'14px', padding:'8px 12px', outline:'none' }});
+    const carbInp = h('input', { type:'number', value:String(g.carbs),    style:{ width:'100%', background:C.bg, border:`1px solid ${C.border}`, borderRadius:'8px', color:C.text, fontFamily:"'DM Mono',monospace", fontSize:'14px', padding:'8px 12px', outline:'none' }});
+    const fatInp  = h('input', { type:'number', value:String(g.fat || 65), style:{ width:'100%', background:C.bg, border:`1px solid ${C.border}`, borderRadius:'8px', color:C.text, fontFamily:"'DM Mono',monospace", fontSize:'14px', padding:'8px 12px', outline:'none' }});
+    const protInp = h('input', { type:'number', value:String(g.protein || 166), style:{ width:'100%', background:C.bg, border:`1px solid ${C.border}`, borderRadius:'8px', color:C.text, fontFamily:"'DM Mono',monospace", fontSize:'14px', padding:'8px 12px', outline:'none' }});
+    const saveBtn = h('button', { style:{ flex:'1', padding:'9px', background:C.accent, color:'#1a1600', border:'none', borderRadius:'8px', fontFamily:"'DM Sans',sans-serif", fontWeight:'600', fontSize:'13px', cursor:'pointer' }}, 'Save');
+    saveBtn.addEventListener('click', () => {
+      const c = parseInt(calInp.value), cb = parseInt(carbInp.value), pr = parseInt(protInp.value);
+      const ft = parseInt(fatInp.value);
+      if (c > 0 && cb > 0) { saveGoals({ calories:c, carbs:cb, protein: pr || 166, fat: ft || 65 }); editGoals.set(false); }
+    });
+    const cancelBtn = h('button', { style:{ flex:'1', padding:'9px', background:'none', color:C.muted, border:`1px solid ${C.border}`, borderRadius:'8px', fontFamily:"'DM Sans',sans-serif", fontSize:'13px', cursor:'pointer' }}, 'Cancel');
+    cancelBtn.addEventListener('click', () => editGoals.set(false));
+    goalsEditor = h('div', { style:{ background:C.card, border:`1px solid ${C.border}`, borderRadius:'12px', padding:'16px 18px', marginBottom:'20px' }},
+      h('div', { style:{ fontFamily:"'DM Mono',monospace", fontSize:'10px', textTransform:'uppercase', letterSpacing:'2px', color:C.muted, marginBottom:'14px' }}, 'My Intentions'),
+      h('div', { style:{ display:'flex', gap:'12px', marginBottom:'12px' }},
+        h('div', { style:{flex:'1'}}, h('div', { style:{ fontSize:'11px', color:C.muted, marginBottom:'5px', fontFamily:"'DM Mono',monospace", textTransform:'uppercase', letterSpacing:'1px' }}, 'Calories'), calInp),
+        h('div', { style:{flex:'1'}}, h('div', { style:{ fontSize:'11px', color:C.muted, marginBottom:'5px', fontFamily:"'DM Mono',monospace", textTransform:'uppercase', letterSpacing:'1px' }}, 'Carbs (g)'), carbInp),
+        h('div', { style:{flex:'1'}}, h('div', { style:{ fontSize:'11px', color:C.protein, marginBottom:'5px', fontFamily:"'DM Mono',monospace", textTransform:'uppercase', letterSpacing:'1px' }}, 'Protein (g)'), protInp),
+        h('div', { style:{flex:'1'}}, h('div', { style:{ fontSize:'11px', color:C.fat, marginBottom:'5px', fontFamily:"'DM Mono',monospace", textTransform:'uppercase', letterSpacing:'1px' }}, 'Fat (g)'), fatInp),
+      ),
+      h('div', { style:{ display:'flex', gap:'8px' }}, saveBtn, cancelBtn),
+    );
+  }
+
+  // Summary
+  const editGoalsBtn = h('button', { style:{ marginTop:'10px', background:'none', border:'none', color:C.muted, fontFamily:"'DM Mono',monospace", fontSize:'10px', cursor:'pointer', padding:'0', textTransform:'uppercase', letterSpacing:'1px', textDecoration:'underline' }}, editGoals.get() ? 'never mind' : 'my intentions');
+  editGoalsBtn.addEventListener('click', () => editGoals.set(v => !v));
+
+  const neverToggle = h('button', { style:{ marginTop:'6px', marginLeft:'12px', background:'none', border:'none', color:C.muted, fontFamily:"'DM Mono',monospace", fontSize:'10px', cursor:'pointer', padding:'0', textTransform:'uppercase', letterSpacing:'1px', textDecoration:'underline' }}, showNever.get() ? 'hide that list' : 'foods that don\'t work for me (' + neverEat.get().length + ')');
+  neverToggle.addEventListener('click', () => showNever.set(v => !v));
+
+  const profileToggle = h('button', { style:{ marginTop:'6px', marginLeft:'12px', background:'none', border:'none', color:C.muted, fontFamily:"'DM Mono',monospace", fontSize:'10px', cursor:'pointer', padding:'0', textTransform:'uppercase', letterSpacing:'1px', textDecoration:'underline' }}, showProfile.get() ? 'hide my info' : 'about me');
+  profileToggle.addEventListener('click', () => showProfile.set(v => !v));
+  const _bsEarly = bikeState.get();
+  const bikeToggle = h('button', { style:{ marginTop:'6px', marginLeft:'12px', background:'none', border:'none', color:C.accent, fontFamily:"'DM Mono',monospace", fontSize:'10px', cursor:'pointer', padding:'0', textTransform:'uppercase', letterSpacing:'1px', textDecoration:'underline' }},
+    showBike.get() ? 'hide my goal' : '🎁 my goal (' + _bsEarly.unlockedIds.length + '/' + BIKE_PARTS.length + ')');
+  bikeToggle.addEventListener('click', function() { showBike.set(function(v){ return !v; }); });
+  const summary = h('div', { style:{ background:C.card, border:`1px solid ${C.border}`, borderRadius:'12px', padding:'18px 20px', marginBottom:'20px', boxShadow:'0 2px 12px rgba(44,31,20,0.06)' }},
+    h('div', { style:{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'14px' }},
+      h('span', { style:{ fontFamily:"'DM Mono',monospace", fontSize:'11px', textTransform:'uppercase', letterSpacing:'2px', color:C.muted }}, 'How I\'m Doing'),
+      h('div', { style:{ display:'flex', alignItems:'baseline', gap:'10px' }},
+        h('span', { style:{ fontFamily:"'DM Mono',monospace", fontSize:'12px', color: over ? C.danger : C.muted, whiteSpace:'nowrap' }}, over ? Math.abs(Math.round(remaining)) + ' kcal over' : Math.round(remaining) + ' kcal left'),
+        h('span', { style:{ fontFamily:"'Playfair Display',serif", fontSize:'22px', color:C.accent, whiteSpace:'nowrap' }}, Math.round(tot.calories), h('span', { style:{ fontSize:'11px', color:C.muted, fontFamily:"'DM Mono',monospace" }}, ' kcal')),
+      ),
+    ),
+    macroBar('Calories', tot.calories, g.calories, C.calories),
+    macroBar('Protein',  tot.protein,  g.protein || 166, C.protein),
+    macroBar('Carbs',    tot.carbs,    g.carbs,     C.carbs),
+    macroBar('Fat',      tot.fat,      g.fat || 65, C.fat),
+    h('div', { style:{ display:'flex', alignItems:'center', gap:'12px', flexWrap:'wrap' }}, editGoalsBtn, neverToggle, profileToggle, bikeToggle),
+  );
+
+  // Profile panel
+  let profilePanel = h('span',{});
+  if (showProfile.get()) {
+    const p = profile.get();
+    const fields = [
+      { key:'sex', label:'Sex', type:'select', options:[['male','Male'],['female','Female']] },
+      { key:'age', label:'Age', type:'number', min:10, max:120 },
+      { key:'weightKg', label:'Weight (kg)', type:'number', min:30, max:300 },
+      { key:'heightCm', label:'Height (cm)', type:'number', min:100, max:250 },
+      { key:'activity', label:'Activity', type:'select', options:[
+        ['sedentary','Sedentary (desk job, little exercise)'],
+        ['light','Lightly active (exercise 1-3x/week)'],
+        ['moderate','Moderately active (exercise 3-5x/week)'],
+        ['active','Very active (exercise 6-7x/week)'],
+        ['very_active','Extra active (physical job + exercise)'],
+      ]},
+    ];
+    const inputs = {};
+    const fieldEls = fields.map(function(f) {
+      var inp;
+      var inputStyle = { width:'100%', background:C.bg, border:'1px solid ' + C.border, borderRadius:'8px', color:C.text, fontFamily:"'DM Sans',sans-serif", fontSize:'13px', padding:'8px 10px', outline:'none' };
+      if (f.type === 'select') {
+        inp = h('select', { style: Object.assign({}, inputStyle, { cursor:'pointer' }) },
+          ...f.options.map(function(opt) {
+            var o = h('option', { value: opt[0] }, opt[1]);
+            if (p[f.key] === opt[0]) o.selected = true;
+            return o;
+          })
+        );
+      } else {
+        inp = h('input', { type:'number', value: String(p[f.key] || ''), style: inputStyle });
+      }
+      inp.addEventListener('focus', function() { inp.style.borderColor = C.accent + '88'; });
+      inp.addEventListener('blur',  function() { inp.style.borderColor = C.border; });
+      inputs[f.key] = inp;
+
+      return h('div', { style:{ flex:'1', minWidth:'120px' }},
+        h('div', { style:{ fontSize:'11px', color:C.muted, marginBottom:'4px', fontFamily:"'DM Mono',monospace", textTransform:'uppercase', letterSpacing:'1px' }}, f.label),
+        inp,
+      );
+    });
+    const saveBtn = h('button', { style:{ padding:'9px 18px', background:C.accent, color:'#1a1600', border:'none', borderRadius:'8px', fontFamily:"'DM Sans',sans-serif", fontWeight:'600', fontSize:'13px', cursor:'pointer' }}, 'Save');
+    saveBtn.addEventListener('click', function() {
+      var updated = {
+        sex: inputs.sex.value,
+        age: parseInt(inputs.age.value) || p.age,
+        weightKg: parseFloat(inputs.weightKg.value) || p.weightKg,
+        heightCm: parseFloat(inputs.heightCm.value) || p.heightCm,
+        activity: inputs.activity.value,
+      };
+      saveProfile(updated);
+
+      showProfile.set(false);
+    });
+    const cancelBtn = h('button', { style:{ padding:'9px 18px', background:'none', color:C.muted, border:'1px solid ' + C.border, borderRadius:'8px', fontFamily:"'DM Sans',sans-serif", fontSize:'13px', cursor:'pointer' }}, 'Cancel');
+    cancelBtn.addEventListener('click', function() { showProfile.set(false); });
+    const tdee = calcTDEE(p);
+    profilePanel = h('div', { style:{ background:C.card, border:'1px solid ' + C.accent + '44', borderRadius:'12px', padding:'16px 18px', marginBottom:'20px' }},
+      h('div', { style:{ display:'flex', justifyContent:'space-between', alignItems:'baseline', marginBottom:'14px' }},
+        h('div', { style:{ fontFamily:"'DM Mono',monospace", fontSize:'10px', textTransform:'uppercase', letterSpacing:'2px', color:C.accent }}, 'My Profile'),
+        h('div', { style:{ fontFamily:"'DM Mono',monospace", fontSize:'11px', color:C.muted }}, 'TDEE: ~' + tdee + ' kcal/day'),
+      ),
+      h('div', { style:{ display:'flex', flexWrap:'wrap', gap:'10px', marginBottom:'12px' }}, ...fieldEls),
+      h('div', { style:{ display:'flex', gap:'8px' }}, saveBtn, cancelBtn),
+    );
+  }
+
+
+  // ---- BIKE REWARD PANEL ----
+  const bs = bikeState.get();
+
+  let bikePanel = h('span',{});
+  const anim = bikeUnlockAnim.get();
+  if (anim) {
+    var animParts = anim.parts || [anim.part];
+    var borderColor = anim.isJackpot ? '#e8c547' : anim.isDouble ? '#5b9bd5' : C.accent;
+    var bgColor = anim.isJackpot ? '#1a1400' : anim.isDouble ? '#0a0f1a' : '#141a0a';
+    var headline = anim.isJackpot ? '🎁 Two pieces today!' : anim.isDouble ? '🌿 A double helping!' : animParts[0].name + ' — yours!';
+    bikePanel = h('div', { style:{ background:bgColor, border:'2px solid ' + borderColor, borderRadius:'14px', padding:'24px 20px', marginBottom:'20px', textAlign:'center' }},
+      h('div', { style:{ fontSize:'44px', marginBottom:'10px' }}, animParts.map(function(p){ return p.emoji; }).join(' ')),
+      h('div', { style:{ fontFamily:"'Playfair Display',serif", fontSize:'20px', color:borderColor, marginBottom:'10px' }}, headline),
+      h('div', { style:{ display:'flex', flexDirection:'column', gap:'8px', marginBottom:'10px' }},
+        ...animParts.map(function(p) {
+          return h('div', { style:{ background:'rgba(255,255,255,0.04)', borderRadius:'8px', padding:'8px 12px' }},
+            h('div', { style:{ color:C.text, fontSize:'13px', fontWeight:'500' }}, p.name),
+            h('div', { style:{ color:C.muted, fontSize:'12px', marginTop:'2px' }}, p.desc),
+          );
+        })
+      ),
+      h('div', { style:{ fontFamily:"'DM Mono',monospace", fontSize:'11px', color:C.muted }}, bs.unlockedIds.length + ' of ' + BIKE_PARTS.length + ' pieces · you\'re doing this'),
+    );
+  } else if (showBike.get()) {
+    var pct = Math.min(100, Math.round(bs.unlockedIds.length / BIKE_PARTS.length * 100));
+    var totalUnlocked = bs.unlockedIds.reduce(function(s,id){ var p=BIKE_PARTS.find(function(x){return x.id===id;}); return s+(p?p.value:0); },0);
+    var rows = BIKE_PARTS.map(function(part) {
+      var unlocked = bs.unlockedIds.indexOf(part.id) >= 0;
+      return h('div', { style:{ display:'flex', alignItems:'center', gap:'10px', padding:'8px 0', borderBottom:'1px solid ' + C.border, opacity: unlocked ? '1' : '0.35' }},
+        h('span', { style:{ fontSize:'18px', width:'24px', textAlign:'center' }}, unlocked ? part.emoji : '🔒'),
+        h('div', { style:{ flex:'1' }},
+          h('div', { style:{ fontSize:'13px', color: unlocked ? C.text : C.muted, fontFamily:"'DM Sans',sans-serif" }}, unlocked ? part.name : '???'),
+          unlocked ? h('div', { style:{ fontSize:'11px', color:C.muted, fontStyle:'italic' }}, part.desc) : h('span',{}),
+        ),
+        h('div', { style:{ fontFamily:"'DM Mono',monospace", fontSize:'11px', color: unlocked ? C.accent : C.muted }}, unlocked ? 'CAD ~$' + part.value : ''),
+      );
+    });
+    bikePanel = h('div', { style:{ background:C.card, border:'1px solid ' + C.accent + '44', borderRadius:'12px', padding:'16px 18px', marginBottom:'20px' }},
+      h('div', { style:{ display:'flex', justifyContent:'space-between', alignItems:'baseline', marginBottom:'4px' }},
+        h('div', { style:{ fontFamily:"'DM Mono',monospace", fontSize:'10px', textTransform:'uppercase', letterSpacing:'2px', color:C.accent }}, '🎁 My Goal'),
+        h('div', { style:{ fontFamily:"'DM Mono',monospace", fontSize:'11px', color:C.muted }}, bs.unlockedIds.length + ' pieces earned · ' + pct + '% of the way there'),
+      ),
+      h('div', { style:{ background:C.bg, borderRadius:'4px', height:'6px', marginBottom:'14px', overflow:'hidden' }},
+        h('div', { style:{ width: pct + '%', height:'100%', background: C.accent, borderRadius:'4px', transition:'width 0.6s ease' }}),
+      ),
+      h('div', {}, ...rows),
+      h('div', { style:{ marginTop:'12px', fontFamily:"'DM Mono',monospace", fontSize:'11px', color:C.muted, textAlign:'right' }},
+        'Unlocked value: CAD ~$' + totalUnlocked + ' of ~$' + BIKE_TOTAL_VALUE,
+      ),
+    );
+  }
+
+  // Never-eat panel
+  let neverPanel = h('span',{});
+  if (showNever.get()) {
+    const neverList = neverEat.get();
+    if (!refs.neverInp) {
+      refs.neverInp = h('input', { type:'text', placeholder:'e.g. almond milk', style:{ flex:'1', background:C.bg, border:`1px solid ${C.border}`, borderRadius:'8px', color:C.text, fontFamily:"'DM Sans',sans-serif", fontSize:'13px', padding:'8px 12px', outline:'none' }});
+      refs.neverInp.addEventListener('focus', () => refs.neverInp.style.borderColor = C.danger+'88');
+      refs.neverInp.addEventListener('blur',  () => refs.neverInp.style.borderColor = C.border);
+      refs.neverInp.addEventListener('input', e => { neverInput.value = e.target.value; });
+      refs.neverInp.addEventListener('keydown', e => {
+        if (e.key === 'Enter') {
+          const v = refs.neverInp.value.trim().toLowerCase();
+          if (v && !neverEat.get().includes(v)) { saveNever([...neverEat.get(), v]); }
+          refs.neverInp.value = ''; neverInput.value = '';
+        }
+      });
+    }
+    const addBtn = h('button', { style:{ padding:'8px 14px', background:C.danger, color:'#fff', border:'none', borderRadius:'8px', fontFamily:"'DM Sans',sans-serif", fontWeight:'600', fontSize:'13px', cursor:'pointer', flexShrink:'0' }}, 'Add');
+    addBtn.addEventListener('click', () => {
+      const v = refs.neverInp.value.trim().toLowerCase();
+      if (v && !neverEat.get().includes(v)) { saveNever([...neverEat.get(), v]); }
+      refs.neverInp.value = ''; neverInput.value = '';
+    });
+    neverPanel = h('div', { style:{ background:C.card, border:`1px solid ${C.danger}44`, borderRadius:'12px', padding:'16px 18px', marginBottom:'20px' }},
+      h('div', { style:{ fontFamily:"'DM Mono',monospace", fontSize:'10px', textTransform:'uppercase', letterSpacing:'2px', color:C.danger, marginBottom:'12px' }}, 'Never-eat list'),
+      h('div', { style:{ display:'flex', gap:'8px', marginBottom:'12px' }}, refs.neverInp, addBtn),
+      neverList.length ? h('div', { style:{ display:'flex', flexWrap:'wrap', gap:'6px' }},
+        ...neverList.map(food => {
+          const tag = h('div', { style:{ display:'flex', alignItems:'center', gap:'4px', background:C.bg, border:`1px solid ${C.danger}44`, borderRadius:'20px', padding:'3px 10px 3px 12px', fontSize:'12px', color:C.text }},
+            h('span', {}, food),
+            (() => {
+              const x = h('button', { style:{ background:'none', border:'none', color:C.danger, cursor:'pointer', fontSize:'14px', padding:'0 0 0 4px', lineHeight:'1' }}, '×');
+              x.addEventListener('click', () => saveNever(neverEat.get().filter(f => f !== food)));
+              return x;
+            })(),
+          );
+          return tag;
+        }),
+      ) : h('div', { style:{ color:C.muted, fontSize:'12px', fontStyle:'italic' }}, 'No foods added yet.'),
+    );
+  }
+
+  // Meal input — stable ref
+  if (!refs.textarea) {
+    refs.textarea = h('textarea', { placeholder:"Describe your meal in plain English.", rows:'3', style:{ width:'100%', background:C.card, border:`1px solid ${C.border}`, borderRadius:'10px', color:C.text, fontFamily:"'DM Sans',sans-serif", fontSize:'14px', padding:'12px 14px', resize:'none', outline:'none', lineHeight:'1.5' }});
+    refs.textarea.addEventListener('input', e => { inputVal.value = e.target.value; });
+    refs.textarea.addEventListener('change', e => { inputVal.value = e.target.value; });
+    refs.textarea.addEventListener('keyup', e => { inputVal.value = e.target.value; });
+    refs.textarea.addEventListener('focus', () => refs.textarea.style.borderColor = C.accent+'88');
+    refs.textarea.addEventListener('blur',  () => refs.textarea.style.borderColor = C.border);
+    refs.textarea.addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); addMeal(); }});
+  }
+  const logBtn = h('button', { style:{ marginTop:'10px', width:'100%', padding:'12px', border:'none', borderRadius:'10px', background: isLoading ? C.border : C.accent, color: isLoading ? C.muted : '#1a1600', fontFamily:"'DM Sans',sans-serif", fontWeight:'600', fontSize:'15px', cursor: isLoading ? 'not-allowed' : 'pointer' }}, isLoading ? 'Just a moment…' : 'I Ate');
+  if (!isLoading) logBtn.addEventListener('click', addMeal);
+  const err = errMsg.get();
+  // Hidden file input for photo — recreated each render so click always works
+  const photoFileInput = h('input', { type:'file', accept:'image/*', style:{ display:'none' }});
+  photoFileInput.addEventListener('change', function(e) {
+    var file = e.target.files && e.target.files[0];
+    if (file) scanPhoto(file);
+    photoFileInput.value = '';
+  });
+  const isScanning = photoScanning.get();
+  const photoBtn = h('button', { style:{ position:'absolute', right:'10px', bottom:'10px', background:'none', border:'none', cursor: isScanning ? 'not-allowed' : 'pointer', padding:'4px', fontSize:'22px', opacity: isScanning ? '0.4' : '0.7', lineHeight:'1' }}, isScanning ? '⏳' : '📷');
+  if (!isScanning) photoBtn.addEventListener('click', function() { photoFileInput.click(); });
+  const textWrap = h('div', { style:{ position:'relative' }}, refs.textarea, photoBtn, photoFileInput);
+  const inputSection = h('div', { style:{ marginBottom:'20px' }},
+    textWrap,
+    err ? h('div', { style:{ color:C.danger, fontSize:'12px', marginTop:'6px', fontFamily:"'DM Mono',monospace" }}, err) : h('span',{}),
+    logBtn,
+  );
+
+  // Analysis panel
+  let analysisPanel = h('span',{});
+  if (tm.length > 0) {
+    const aOpen = analysisOpen.get();
+    const toggleBtn = h('button', { style:{ width:'100%', padding:'11px', background:'none', border:`1px solid ${C.accent}66`, borderRadius:'10px', color:C.accent, fontFamily:"'DM Sans',sans-serif", fontWeight:'500', fontSize:'14px', cursor:'pointer', display:'flex', alignItems:'center', justifyContent:'center', gap:'8px' }}, '🌿 ', aOpen ? 'Hide Optimisation' : 'Optimise this meal');
+    toggleBtn.addEventListener('click', () => { if (aOpen) analysisOpen.set(false); else runAnalysis(); });
+    let panelContent = h('span',{});
+    if (aOpen) {
+      const al = analysis.get(); const aLoad = analysisLoad.get();
+      let inner;
+      if (aLoad) inner = h('div', { style:{ color:C.muted, fontStyle:'italic', textAlign:'center', padding:'12px 0' }}, 'Thinking about this for you…');
+      else if (al && al.error) inner = h('div', { style:{ color:C.danger }}, (al.message ? al.message : "Couldn't generate analysis.") + ' ', (() => { const b = h('button', { style:{ background:'none', border:'none', color:C.accent, fontFamily:"'DM Mono',monospace", fontSize:'11px', cursor:'pointer', textDecoration:'underline', padding:'0' }}, 'Try again'); b.addEventListener('click', () => { analysis.set(null); runAnalysis(); }); return b; })());
+      else if (al) {
+        const rerun = h('button', { style:{ marginTop:'12px', background:'none', border:'none', color:C.accent+'88', fontFamily:"'DM Mono',monospace", fontSize:'11px', cursor:'pointer', padding:'0', textDecoration:'underline' }}, 'look again');
+        rerun.addEventListener('click', runAnalysis);
+        inner = h('div', {},
+          h('div', { style:{ marginBottom:'14px' }},
+            h('div', { style:{ fontFamily:"'DM Mono',monospace", fontSize:'10px', textTransform:'uppercase', letterSpacing:'2px', color:C.accent, marginBottom:'8px' }}, 'What might help'),
+            (() => {
+              const cc = checkedCuts.get();
+              const cbTop = h('input', { type:'checkbox' });
+              cbTop.checked = cc['topCut'] !== false;
+              cbTop.addEventListener('change', function() {
+                const u = Object.assign({}, checkedCuts.get()); u['topCut'] = cbTop.checked; checkedCuts.set(u);
+              });
+              return h('div', { style:{ background:C.card, borderRadius:'8px', padding:'12px 14px', border:`1px solid ${C.accent}33`, display:'flex', gap:'12px', alignItems:'flex-start' }},
+                h('label', { style:{ display:'flex', alignItems:'flex-start', gap:'10px', flex:'1', cursor:'pointer' }},
+                  cbTop,
+                  h('div', { style:{flex:'1'}},
+                    h('div', { style:{ color:C.text, fontFamily:"'Playfair Display',serif", fontSize:'14px', marginBottom:'3px' }}, al.topCut.meal),
+                    h('div', { style:{ color:C.muted }}, al.topCut.suggestion),
+                  ),
+                ),
+                h('div', { style:{ flexShrink:'0', color:C.accent, fontFamily:"'DM Mono',monospace", fontSize:'13px', whiteSpace:'nowrap' }}, '−'+al.topCut.savedKcal+' kcal'),
+              );
+            })(),
+          ),
+          al.otherTips && al.otherTips.length ? h('div', { style:{ marginBottom:'14px' }},
+            h('div', { style:{ fontFamily:"'DM Mono',monospace", fontSize:'10px', textTransform:'uppercase', letterSpacing:'2px', color:C.muted, marginBottom:'8px' }}, 'A few more thoughts'),
+            h('div', { style:{ display:'flex', flexDirection:'column', gap:'8px' }},
+              ...al.otherTips.map(function(tip, idx) {
+                const cc = checkedCuts.get();
+                const key = 'tip-' + idx;
+                const cb = h('input', { type:'checkbox' });
+                cb.checked = cc[key] !== false;
+                cb.addEventListener('change', function() {
+                  const u = Object.assign({}, checkedCuts.get()); u[key] = cb.checked; checkedCuts.set(u);
+                });
+                return h('div', { style:{ background:C.card, borderRadius:'8px', padding:'10px 14px', border:`1px solid ${C.border}`, display:'flex', gap:'12px', alignItems:'flex-start' }},
+                  h('label', { style:{ display:'flex', alignItems:'flex-start', gap:'10px', flex:'1', cursor:'pointer' }},
+                    cb,
+                    h('div', { style:{flex:'1'}},
+                      h('div', { style:{ color:C.text, fontSize:'13px', marginBottom:'2px' }}, tip.meal),
+                      h('div', { style:{ color:C.muted, fontSize:'12px' }}, tip.suggestion),
+                    ),
+                  ),
+                  h('div', { style:{ flexShrink:'0', color:C.muted, fontFamily:"'DM Mono',monospace", fontSize:'12px', whiteSpace:'nowrap' }}, '−'+tip.savedKcal+' kcal'),
+                );
+              })
+            ),
+          ) : h('span',{}),
+          al.emptyCals ? h('div', { style:{ background:C.card, borderRadius:'8px', padding:'10px 14px', border:'1px solid #c94f4f33', marginBottom:'8px', fontSize:'12px' }},
+            h('span', { style:{ fontFamily:"'DM Mono',monospace", fontSize:'10px', textTransform:'uppercase', letterSpacing:'1px', color:'#c94f4f', marginRight:'8px' }}, '⚠ Empty cals'),
+            h('span', { style:{ color:C.muted }}, al.emptyCals),
+          ) : h('span',{}),
+          h('div', { style:{ borderTop:`1px solid ${C.border}`, paddingTop:'12px', marginTop:'4px', color:C.muted, fontStyle:'italic', fontSize:'12px' }}, al.summary),
+          (() => {
+            const rResult = remakeResult.get();
+            const rLoad = remakeLoading.get();
+            const fItems = fillerItems.get();
+
+            // Filler checkboxes
+            const fillerSection = fItems.length ? h('div', { style:{ marginTop:'14px', borderTop:`1px solid ${C.border}`, paddingTop:'12px' }},
+              h('div', { style:{ fontFamily:"'DM Mono',monospace", fontSize:'10px', textTransform:'uppercase', letterSpacing:'1px', color:C.muted, marginBottom:'8px' }}, 'What might nourish you more?'),
+              h('div', { style:{ display:'flex', flexDirection:'column', gap:'6px' }},
+                ...fItems.map(function(item, idx) {
+                  const id = 'filler-' + idx;
+                  const cb = h('input', { type:'checkbox', id });
+                  cb.checked = item.checked;
+                  cb.addEventListener('change', function() {
+                    const updated = fillerItems.get().slice();
+                    updated[idx] = { label: updated[idx].label, checked: cb.checked };
+                    fillerItems.set(updated);
+                  });
+                  const lbl = h('label', { for: id, style:{ color:C.text, fontSize:'13px', cursor:'pointer', display:'flex', alignItems:'center', gap:'8px' }}, cb, item.label);
+                  return lbl;
+                }),
+              ),
+            ) : h('span',{});
+
+            const remakeBtn = h('button', { style:{ marginTop:'14px', width:'100%', padding:'10px', background:'none', border:`1px solid ${C.accent}66`, borderRadius:'8px', color:C.accent, fontFamily:"'DM Sans',sans-serif", fontSize:'13px', cursor:'pointer' }}, rLoad ? 'Reimagining…' : '✨ Show me a nourishing version');
+            remakeBtn.addEventListener('click', runRemake);
+            const remakeBox = rResult ? h('div', { style:{ marginTop:'10px', background:C.bg, border:`1px solid ${C.accent}44`, borderRadius:'8px', padding:'12px 14px' }},
+              h('div', { style:{ fontFamily:"'DM Mono',monospace", fontSize:'10px', textTransform:'uppercase', letterSpacing:'1px', color:C.muted, marginBottom:'8px' }}, 'A nourishing version — tap to copy'),
+              h('div', { style:{ color:C.text, fontSize:'14px', lineHeight:'1.6', marginBottom:'6px' }}, rResult.description || rResult),
+              rResult.calories ? h('div', { style:{ fontFamily:"'DM Mono',monospace", fontSize:'12px', color:C.calories, marginBottom:'10px' }}, '~' + rResult.calories + ' kcal') : h('span',{}),
+              (() => {
+                const copyText = rResult.description || rResult;
+                const copyBtn = h('button', { style:{ background:'none', border:`1px solid ${C.accent}44`, borderRadius:'6px', color:C.accent, fontFamily:"'DM Mono',monospace", fontSize:'11px', padding:'5px 12px', cursor:'pointer' }}, 'Copy');
+                copyBtn.addEventListener('click', function() {
+                  navigator.clipboard.writeText(copyText).then(function() {
+                    copyBtn.textContent = 'Copied!';
+                    setTimeout(function() { copyBtn.textContent = 'Copy'; }, 2000);
+                  }).catch(function() {
+                    copyBtn.textContent = 'Copy failed';
+                  });
+                });
+                return copyBtn;
+              })(),
+            ) : h('span',{});
+            return h('div', {}, fillerSection, remakeBtn, remakeBox);
+          })(),
+          rerun,
+        );
+      }
+      panelContent = h('div', { style:{ marginTop:'10px', background:C.analysis, border:`1px solid ${C.accent}33`, borderRadius:'10px', padding:'16px 18px', fontSize:'13px', lineHeight:'1.6' }}, inner || h('span',{}));
+    }
+    analysisPanel = h('div', { style:{ marginBottom:'24px' }}, toggleBtn, panelContent);
+  }
+
+  // Effect panel
+  let effectPanel = h('span',{});
+  if (tm.length > 0) {
+    const eOpen = effectOpen.get(); const eResult = effectResult.get(); const eLoad = effectLoad.get();
+    const eToggle = h('button', { style:{ width:'100%', padding:'11px', background:'none', border:`1px solid ${C.fat}66`, borderRadius:'10px', color:C.fat, fontFamily:"'DM Sans',sans-serif", fontWeight:'500', fontSize:'14px', cursor:'pointer', display:'flex', alignItems:'center', justifyContent:'center', gap:'8px' }}, '📊 ', eOpen ? 'Hide Tracking' : 'How am I showing up today?');
+    eToggle.addEventListener('click', () => { if (eOpen) effectOpen.set(false); else runEffect(); });
+    let eContent = h('span',{});
+    if (eOpen) {
+      let inner;
+      if (eLoad) inner = h('div', { style:{ color:C.muted, fontStyle:'italic', textAlign:'center', padding:'12px 0' }}, 'Calculating…');
+      else if (eResult && eResult.error) inner = h('div', { style:{ color:C.danger }}, "Couldn't calculate. Try again.");
+      else if (eResult) {
+        const isDeficit = eResult.deficit > 0;
+        const rerun = h('button', { style:{ marginTop:'12px', background:'none', border:'none', color:C.fat+'88', fontFamily:"'DM Mono',monospace", fontSize:'11px', cursor:'pointer', padding:'0', textDecoration:'underline' }}, 're-calculate');
+        rerun.addEventListener('click', runEffect);
+        inner = h('div', {},
+          h('div', { style:{ display:'flex', gap:'12px', marginBottom:'14px', flexWrap:'wrap' }},
+            h('div', { style:{ flex:'1', background:C.card, borderRadius:'8px', padding:'12px 14px', border:`1px solid ${C.border}`, textAlign:'center' }},
+              h('div', { style:{ fontFamily:"'DM Mono',monospace", fontSize:'10px', textTransform:'uppercase', letterSpacing:'2px', color:C.muted, marginBottom:'6px' }}, 'Your TDEE'),
+              h('div', { style:{ fontFamily:"'Playfair Display',serif", fontSize:'20px', color:C.text }}, eResult.tdee),
+              h('div', { style:{ fontSize:'11px', color:C.muted, fontFamily:"'DM Mono',monospace" }}, 'kcal/day'),
+            ),
+            h('div', { style:{ flex:'1', background:C.card, borderRadius:'8px', padding:'12px 14px', border:`1px solid ${C.border}`, textAlign:'center' }},
+              h('div', { style:{ fontFamily:"'DM Mono',monospace", fontSize:'10px', textTransform:'uppercase', letterSpacing:'2px', color:C.muted, marginBottom:'6px' }}, isDeficit ? 'Deficit' : 'Surplus'),
+              h('div', { style:{ fontFamily:"'Playfair Display',serif", fontSize:'20px', color: isDeficit ? C.fat : C.danger }}, Math.abs(eResult.deficit)),
+              h('div', { style:{ fontSize:'11px', color:C.muted, fontFamily:"'DM Mono',monospace" }}, 'kcal/day'),
+            ),
+            h('div', { style:{ flex:'1', background:C.card, borderRadius:'8px', padding:'12px 14px', border:`1px solid ${isDeficit ? C.fat : C.danger}44`, textAlign:'center' }},
+              h('div', { style:{ fontFamily:"'DM Mono',monospace", fontSize:'10px', textTransform:'uppercase', letterSpacing:'2px', color:C.muted, marginBottom:'6px' }}, isDeficit ? 'Loss/week' : 'Gain/week'),
+              h('div', { style:{ fontFamily:"'Playfair Display',serif", fontSize:'20px', color: isDeficit ? C.fat : C.danger }}, (eResult.weeklyLossKg > 0 ? '-' : '+') + Math.abs(eResult.weeklyLossKg).toFixed(2)),
+              h('div', { style:{ fontSize:'11px', color:C.muted, fontFamily:"'DM Mono',monospace" }}, 'kg'),
+            ),
+          ),
+          h('div', { style:{ borderTop:`1px solid ${C.border}`, paddingTop:'14px', display:'flex', flexDirection:'column', gap:'8px' }},
+            ...(['calories','protein','carbs','fat','fiber','vitamins'].map(key => {
+              const labels = { calories:'🔥 Calories', protein:'💪 Protein', carbs:'🌾 Carbs', fat:'🥑 Fat', fiber:'🌿 Fiber', vitamins:'💊 Vitamins' };
+              return h('div', { style:{ display:'flex', gap:'10px', alignItems:'flex-start' }},
+                h('span', { style:{ fontFamily:"'DM Mono',monospace", fontSize:'11px', color:C.muted, whiteSpace:'nowrap', paddingTop:'1px', minWidth:'72px' }}, labels[key]),
+                h('span', { style:{ fontSize:'13px', color:C.text, lineHeight:'1.5' }}, eResult[key] || '—'),
+              );
+            })),
+            h('div', { style:{ borderTop:`1px solid ${C.border}`, paddingTop:'10px', marginTop:'2px' }},
+              h('span', { style:{ fontSize:'13px', color:C.text, fontWeight:'500' }}, eResult.overall || ''),
+            ),
+            h('div', { style:{ paddingTop:'8px', fontSize:'12px', color:C.fat, fontStyle:'italic' }}, eResult.motivation || ''),
+          ),
+          rerun,
+        );
+      }
+      eContent = h('div', { style:{ marginTop:'10px', background:C.analysis, border:`1px solid ${C.fat}33`, borderRadius:'10px', padding:'16px 18px', fontSize:'13px', lineHeight:'1.6' }}, inner || h('span',{}));
+    }
+    effectPanel = h('div', { style:{ marginBottom:'24px' }}, eToggle, eContent);
+  }
+
+  // Meal list
+  let mealList;
+  if (tm.length === 0) {
+    mealList = h('div', { style:{ textAlign:'center', color:C.muted, fontStyle:'italic', padding:'40px 0', fontSize:'14px' }}, 'Nothing logged yet today. Take care of yourself — you deserve it.');
+  } else {
+    mealList = h('div', {},
+      h('div', { style:{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'12px' }},
+        h('div', { style:{ fontFamily:"'DM Mono',monospace", fontSize:'11px', textTransform:'uppercase', letterSpacing:'2px', color:C.muted }}, tm.length + ' meal' + (tm.length !== 1 ? 's' : '') + ' logged'),
+        (() => {
+          const clrBtn = h('button', { style:{ background:'none', border:'none', color:C.danger, fontFamily:"'DM Mono',monospace", fontSize:'10px', cursor:'pointer', padding:'0', textTransform:'uppercase', letterSpacing:'1px', textDecoration:'underline' }}, 'start fresh');
+          clrBtn.addEventListener('click', function() {
+            if (confirm('Start fresh for today?')) {
+              saveMeals([]); analysis.set(null); effectResult.set(null); remakeResult.set(null);
+            }
+          });
+          return clrBtn;
+        })(),
+      ),
+      ...[...tm].reverse().map(meal => {
+        const card = h('div', { style:{ background:C.card, border:`1px solid ${C.border}`, borderRadius:'10px', padding:'14px 16px', marginBottom:'10px', display:'flex', gap:'12px', alignItems:'flex-start', transition:'border-color 0.2s' }},
+          h('div', { style:{ flex:'1', minWidth:'0' }},
+            h('div', { style:{ fontFamily:"'Playfair Display',serif", fontSize:'15px', color:C.text, marginBottom:'6px', lineHeight:'1.3' }}, meal.description),
+            h('div', { style:{ display:'flex', gap:'12px', flexWrap:'wrap' }},
+              h('span', { style:{ fontSize:'12px', color:C.calories, fontFamily:"'DM Mono',monospace" }}, '🔥 '+meal.calories+' kcal'),
+              h('span', { style:{ fontSize:'12px', color:C.protein,  fontFamily:"'DM Mono',monospace" }}, '💪 '+meal.protein+'g prot'),
+              h('span', { style:{ fontSize:'12px', color:C.carbs,    fontFamily:"'DM Mono',monospace" }}, '🌾 '+meal.carbs+'g carbs'),
+              h('span', { style:{ fontSize:'12px', color:C.fat,      fontFamily:"'DM Mono',monospace" }}, '🥑 '+(meal.fat||0)+'g fat'),
+            ),
+            meal.note ? h('div', { style:{ fontSize:'11px', color:C.muted, marginTop:'5px', fontStyle:'italic' }}, meal.note) : h('span',{}),
+          ),
+          h('div', { style:{ display:'flex', gap:'6px', flexShrink:'0' }},
+            iconBtn('↻', C.accent, () => { inputVal.value = meal.description; if(refs.textarea) refs.textarea.value = meal.description; }),
+            iconBtn('×', C.danger, () => { saveMeals(meals.get().filter(m => m.id !== meal.id)); analysis.set(null); effectResult.set(null); remakeResult.set(null); }),
+          ),
+        );
+        card.addEventListener('mouseenter', () => card.style.borderColor = C.accent+'55');
+        card.addEventListener('mouseleave', () => card.style.borderColor = C.border);
+        return card;
+      }),
+    );
+  }
+
+  return h('div', { style:{ minHeight:'100vh', background:C.bg, color:C.text, fontFamily:"'DM Sans',sans-serif" }},
+    h('div', { style:{ maxWidth:'520px', margin:'0 auto', padding:'32px 16px 64px' }},
+      header, goalsEditor, summary, profilePanel, bikePanel, neverPanel, inputSection,
+      lateNudge.get() ? h('div', { style:{ background:'#1a1510', border:'1px solid ' + C.accent + '55', borderRadius:'10px', padding:'12px 16px', marginBottom:'16px', display:'flex', gap:'10px', alignItems:'flex-start' }},
+        h('span', { style:{ fontSize:'18px', flexShrink:'0' }}, '🌙'),
+        h('div', {},
+          h('div', { style:{ color:C.accent, fontFamily:"'DM Mono',monospace", fontSize:'11px', textTransform:'uppercase', letterSpacing:'1px', marginBottom:'3px' }}, 'Late meal'),
+          h('div', { style:{ color:C.muted, fontSize:'13px', lineHeight:'1.5' }}, 'It’s getting late — something gentle might serve you better now.'),
+        ),
+      ) : h('span',{}),
+      analysisPanel, effectPanel, mealList,
+    ),
+  );
+}
+
+try {
+  mount(document.getElementById('root'), () =>
+    apiKey.get() ? renderApp() : renderApiKeyScreen()
+  );
+} catch(e) {
+  document.getElementById('root').innerHTML = '<div style="color:#e07b54;padding:32px;font-family:monospace;font-size:13px;white-space:pre-wrap;">Error: ' + e.message + '\n\n' + e.stack + '</div>';
+}
+</script>
+</body>
+</html>
