@@ -141,7 +141,7 @@ const checkedCuts   = signal({});
 // ============================================================
 // REVOLT 1 REWARD SYSTEM — 40 parts, one per day, ends May 4
 // ============================================================
-const BIKE_PARTS = [
+const STATIC_BIKE_PARTS = [
   { id:'bartape_plugs', name:'Bar end plugs', value:6, emoji:'🔩', desc:'The finishing touch on your bars' },
   { id:'wheels', name:'Wheelset (700c)', value:277, emoji:'⚙️', desc:'Giant aluminum wheels, ready to roll' },
   { id:'cable_ends', name:'Cable end caps', value:5, emoji:'🔧', desc:'Tiny but essential - keeps cables from fraying' },
@@ -183,7 +183,13 @@ const BIKE_PARTS = [
   { id:'spokes', name:'Spoke set x32', value:26, emoji:'✨', desc:'32 stainless spokes - the web that holds it all' },
   { id:'assembly', name:'Final assembly', value:58, emoji:'🎉', desc:'Every part in place. The Revolt lives. Ride it.' },
 ];
-const BIKE_TOTAL_VALUE = BIKE_PARTS.reduce(function(s,p){ return s + p.value; }, 0);
+function getBikeParts() {
+  var o = loadOnboarding();
+  if (o && o.rewardParts && o.rewardParts.length) return o.rewardParts;
+  return STATIC_BIKE_PARTS;
+}
+const BIKE_PARTS = getBikeParts();
+const BIKE_TOTAL_VALUE = BIKE_PARTS.reduce(function(s,p){ return s + (p.value||50); }, 0);
 
 function loadBikeState() {
   return JSON.parse(localStorage.getItem('meb_bike') || 'null') || { unlockedIds: [], awardedDates: [], pendingUnlock: null };
@@ -192,6 +198,17 @@ function saveBikeState(s) { localStorage.setItem('meb_bike', JSON.stringify(s));
 const bikeState      = signal(loadBikeState());
 const showBike       = signal(false);
 const bikeUnlockAnim = signal(null);
+
+// Onboarding
+function loadOnboarding() {
+  return JSON.parse(localStorage.getItem('fc_onboarding') || 'null');
+}
+function saveOnboarding(o) { localStorage.setItem('fc_onboarding', JSON.stringify(o)); onboarding.set(o); }
+const onboarding     = signal(loadOnboarding()); // null = not done
+const onboardStep    = signal(0);
+const onboardData    = signal({});
+const onboardLoading = signal(false);
+const onboardError   = signal('');
 
 function checkForReward() {
   var today = todayStr();
@@ -529,6 +546,204 @@ function iconBtn(symbol, color, onclick) {
   el.addEventListener('mouseleave', () => el.style.background = 'none');
   el.addEventListener('click', onclick);
   return el;
+}
+
+function renderOnboarding() {
+  const step = onboardStep.get();
+  const data = onboardData.get();
+  const loading = onboardLoading.get();
+  const err = onboardError.get();
+
+  const STEPS = [
+    {
+      key: 'here',
+      question: "Before we get started — what's brought you here today?",
+      placeholder: "Whatever's on your mind...",
+      type: 'textarea',
+    },
+    {
+      key: 'lastfor',
+      question: "When life gets busy and stretched, who tends to get taken care of last?",
+      placeholder: "Be honest...",
+      type: 'textarea',
+    },
+    {
+      key: 'restore',
+      question: "What's one thing you do that's purely for you — that genuinely restores you?",
+      placeholder: "Something that fills you back up...",
+      type: 'textarea',
+    },
+    {
+      key: 'whenlast',
+      question: "When did you last actually do that?",
+      placeholder: "Be honest...",
+      type: 'textarea',
+    },
+    {
+      key: 'reward',
+      question: "What would you love to work toward as a reward for building this habit? Something just for you — that you keep putting off because others come first.",
+      placeholder: "A weekend away, a cooking class, a piece of jewellery, a spa day... anything.",
+      type: 'textarea',
+    },
+    {
+      key: 'rewarddesc',
+      question: "Describe it at its best. What does it look like?",
+      placeholder: "Paint the picture...",
+      type: 'textarea',
+    },
+  ];
+
+  const isLast = step === STEPS.length - 1;
+  const currentStep = STEPS[step];
+
+  // Progress dots
+  const dots = h('div', { style:{ display:'flex', gap:'6px', justifyContent:'center', marginBottom:'32px' }},
+    ...STEPS.map(function(_, i) {
+      return h('div', { style:{
+        width: i === step ? '20px' : '6px',
+        height:'6px',
+        borderRadius:'3px',
+        background: i < step ? C.accent : i === step ? C.accent : C.border,
+        transition:'all 0.3s ease',
+      }});
+    })
+  );
+
+  const inp = h('textarea', {
+    placeholder: currentStep.placeholder,
+    rows: '4',
+    style:{
+      width:'100%',
+      background:'#faf6f1',
+      border:`1px solid ${C.border}`,
+      borderRadius:'10px',
+      color:C.text,
+      fontFamily:"'DM Sans',sans-serif",
+      fontSize:'15px',
+      padding:'14px 16px',
+      resize:'none',
+      outline:'none',
+      lineHeight:'1.6',
+      marginBottom:'16px',
+    }
+  });
+  inp.addEventListener('focus', function() { inp.style.borderColor = C.accent + '88'; });
+  inp.addEventListener('blur',  function() { inp.style.borderColor = C.border; });
+  // Pre-fill if returning to step
+  if (data[currentStep.key]) inp.value = data[currentStep.key];
+
+  const nextBtn = h('button', {
+    style:{
+      width:'100%',
+      padding:'14px',
+      background: loading ? C.border : C.accent,
+      color: loading ? C.muted : 'white',
+      border:'none',
+      borderRadius:'10px',
+      fontFamily:"'DM Sans',sans-serif",
+      fontWeight:'600',
+      fontSize:'15px',
+      cursor: loading ? 'not-allowed' : 'pointer',
+    }
+  }, loading ? 'Building your reward...' : isLast ? 'Build my reward →' : 'Continue →');
+
+  nextBtn.addEventListener('click', async function() {
+    var val = inp.value.trim();
+    if (!val) return;
+    var updated = Object.assign({}, data);
+    updated[currentStep.key] = val;
+    onboardData.set(updated);
+
+    if (!isLast) {
+      onboardStep.set(step + 1);
+      return;
+    }
+
+    // Final step — generate 40-piece reward via Claude
+    onboardLoading.set(true);
+    onboardError.set('');
+    try {
+      var prompt = 'Someone has described their reward goal as follows:
+
+' +
+        'What they want: ' + updated.reward + '
+' +
+        'How they describe it at its best: ' + updated.rewarddesc + '
+
+' +
+        'Generate exactly 40 meaningful pieces that together represent earning this reward. ' +
+        'Each piece should be a small, specific, imaginative step, moment, preparation, or component of the experience — ' +
+        'ordered so that small and large pieces are interspersed (not all small first). ' +
+        'Make them feel real and personal to what they described, not generic. ' +
+        'Some should be logistical (booking, planning), some experiential (a specific moment), some emotional (permission, arrival). ' +
+        'Return ONLY a JSON array of 40 objects, no markdown: ' +
+        '[{"id":"p1","name":"short name","emoji":"single emoji","desc":"one warm sentence about this piece"}]';
+
+      var res = await fetch('https://api.anthropic.com/v1/messages', {
+        method:'POST',
+        headers:{
+          'Content-Type':'application/json',
+          'x-api-key': apiKey.get(),
+          'anthropic-version':'2023-06-01',
+          'anthropic-dangerous-direct-browser-access':'true',
+        },
+        body: JSON.stringify({
+          model: MODEL_SMART,
+          max_tokens: 4000,
+          messages:[{ role:'user', content: prompt }]
+        })
+      });
+      var result = await res.json();
+      if (!res.ok || result.error) throw new Error((result.error && result.error.message) || 'API error');
+      var text = result.content.map(function(b){ return b.text||''; }).join('').trim();
+      var parts = JSON.parse(text.replace(/```json|```/g,'').trim());
+
+      var completed = Object.assign({}, updated, {
+        completedAt: new Date().toISOString(),
+        rewardParts: parts,
+        rewardName: updated.reward,
+      });
+      saveOnboarding(completed);
+
+      // Initialise bike state with new parts
+      var freshBike = { unlockedIds:[], awardedDates:[], pendingUnlock:null, streak:0 };
+      saveBikeState(freshBike);
+
+    } catch(e) {
+      onboardError.set('Something went wrong: ' + (e.message || 'please try again'));
+    } finally {
+      onboardLoading.set(false);
+    }
+  });
+
+  // Back button
+  const backBtn = step > 0 ? h('button', {
+    style:{
+      background:'none', border:'none', color:C.muted,
+      fontFamily:"'DM Mono',monospace", fontSize:'11px',
+      cursor:'pointer', padding:'0', textDecoration:'underline',
+      marginTop:'12px', display:'block', marginLeft:'auto', marginRight:'auto',
+    }
+  }, '← back') : h('span',{});
+  if (step > 0) backBtn.addEventListener('click', function() { onboardStep.set(step - 1); });
+
+  return h('div', { style:{ minHeight:'100vh', background:C.bg, display:'flex', alignItems:'center', justifyContent:'center', padding:'24px' }},
+    h('div', { style:{ width:'100%', maxWidth:'480px' }},
+      h('div', { style:{ textAlign:'center', marginBottom:'40px' }},
+        h('h1', { style:{ fontFamily:"'Playfair Display',serif", fontSize:'32px', color:C.accent, marginBottom:'8px' }}, 'Full Cup'),
+        h('p', { style:{ color:C.muted, fontSize:'14px' }}, 'you can\'t pour from an empty cup.'),
+      ),
+      dots,
+      h('div', { style:{ background:C.card, borderRadius:'16px', padding:'28px 24px', boxShadow:'0 4px 24px rgba(44,31,20,0.08)' }},
+        h('p', { style:{ fontFamily:"'Playfair Display',serif", fontSize:'19px', color:C.text, lineHeight:'1.5', marginBottom:'20px' }}, currentStep.question),
+        inp,
+        err ? h('div', { style:{ color:C.danger, fontSize:'12px', marginBottom:'12px', fontFamily:"'DM Mono',monospace" }}, err) : h('span',{}),
+        nextBtn,
+        backBtn,
+      ),
+      h('p', { style:{ textAlign:'center', color:C.border, fontSize:'11px', marginTop:'20px', fontFamily:"'DM Mono',monospace" }}, (step + 1) + ' of ' + STEPS.length),
+    ),
+  );
 }
 
 function renderApiKeyScreen() {
@@ -1066,7 +1281,9 @@ function renderApp() {
 
 try {
   mount(document.getElementById('root'), () =>
-    apiKey.get() ? renderApp() : renderApiKeyScreen()
+    !apiKey.get() ? renderApiKeyScreen() :
+    !onboarding.get() ? renderOnboarding() :
+    renderApp()
   );
 } catch(e) {
   document.getElementById('root').innerHTML = '<div style="color:#e07b54;padding:32px;font-family:monospace;font-size:13px;white-space:pre-wrap;">Error: ' + e.message + '\n\n' + e.stack + '</div>';
