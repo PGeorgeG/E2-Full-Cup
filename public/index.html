@@ -113,7 +113,6 @@ const date          = signal(todayStr());
   scheduleReset();
 })();
 const inputVal      = { value: '' };
-setTimeout(claimPendingUnlock, 800);
 const loading       = signal(false);
 const errMsg        = signal('');
 const editGoals     = signal(false);
@@ -663,14 +662,9 @@ function renderOnboarding() {
     onboardLoading.set(true);
     onboardError.set('');
     try {
-      var prompt = 'Someone has described their reward goal as follows:
-
-' +
-        'What they want: ' + updated.reward + '
-' +
-        'How they describe it at its best: ' + updated.rewarddesc + '
-
-' +
+      var prompt = 'Someone has described their reward goal as follows:\n\n' +
+        'What they want: ' + updated.reward + '\n' +
+        'How they describe it at its best: ' + updated.rewarddesc + '\n\n' +
         'Generate exactly 40 meaningful pieces that together represent earning this reward. ' +
         'Each piece should be a small, specific, imaginative step, moment, preparation, or component of the experience — ' +
         'ordered so that small and large pieces are interspersed (not all small first). ' +
@@ -1285,6 +1279,7 @@ try {
     !onboarding.get() ? renderOnboarding() :
     renderApp()
   );
+  setTimeout(claimPendingUnlock, 800);
 } catch(e) {
   document.getElementById('root').innerHTML = '<div style="color:#e07b54;padding:32px;font-family:monospace;font-size:13px;white-space:pre-wrap;">Error: ' + e.message + '\n\n' + e.stack + '</div>';
 }
